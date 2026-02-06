@@ -18,10 +18,10 @@ class Config:
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
     
     # Gemini Configuration
-    GEMINI_MODEL = "gemini-2.5-flash"
+    GEMINI_MODEL = "gemini-1.5-flash"
     GEMINI_API_ENDPOINT = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_MODEL}:generateContent"
+    f"https://generativelanguage.googleapis.com/v1/models/"
+    f"{GEMINI_MODEL}:generateContent"
     )
     
     # Database

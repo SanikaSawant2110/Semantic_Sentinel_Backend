@@ -1,151 +1,187 @@
 """
-Database management for Semantic Sentinel
-Handles SQLite operations
+Database module for Semantic Sentinel
+Handles SQLite database operations
 """
 import sqlite3
 import json
-import logging
-from config import Config
 from datetime import datetime
+from config import Config
+import logging
 
 logger = logging.getLogger(__name__)
 
 def get_db_connection():
-    """Get database connection"""
+    """Create database connection"""
     conn = sqlite3.connect(Config.DB_FILE)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
     """Initialize database with required tables"""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Video analysis table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS video_analysis (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                video_id TEXT NOT NULL,
-                video_title TEXT,
-                channel_name TEXT,
-                analysis_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                total_comments_analyzed INTEGER,
-                average_sentiment REAL,
-                analysis_data TEXT,
-                source_type TEXT DEFAULT 'comments',
-                UNIQUE(video_id, analysis_date, source_type)
-            )
-        ''')
-        
-        # Comments table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS comments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                db_video_analysis_id INTEGER,
-                video_id TEXT NOT NULL,
-                comment_id TEXT UNIQUE,
-                author TEXT,
-                text TEXT,
-                published_at TIMESTAMP,
-                like_count INTEGER,
-                reply_count INTEGER DEFAULT 0,
-                sentiment_score REAL DEFAULT 0.0,
-                FOREIGN KEY(db_video_analysis_id) REFERENCES video_analysis(id) ON DELETE CASCADE
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
-        logger.info("Database initialized successfully")
-        
-    except Exception as e:
-        logger.error(f"Database initialization error: {e}")
-        raise
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Create analyses table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS analyses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id TEXT NOT NULL,
+            video_title TEXT,
+            channel_name TEXT,
+            analysis_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            total_comments_analyzed INTEGER,
+            average_sentiment REAL,
+            analysis_data TEXT,
+            UNIQUE(video_id, analysis_date)
+        )
+    ''')
+    
+    # Create comments table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            analysis_id INTEGER,
+            comment_text TEXT,
+            author TEXT,
+            published_at TIMESTAMP,
+            like_count INTEGER,
+            reply_count INTEGER,
+            sentiment_score REAL,
+            FOREIGN KEY (analysis_id) REFERENCES analyses (id)
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+    logger.info("Database initialized successfully")
 
-def store_analysis(video_data, analysis_result, comments=None):
-    """Store complete analysis results"""
+def store_analysis(video_data, analysis_result, comments):
+    """Store analysis results in database"""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        video_id = video_data.get('id')
-        video_title = video_data.get('title')
-        channel_name = video_data.get('channel')
-        
-        total_items = len(comments) if comments else 0
-        avg_sentiment = analysis_result.get('overall_sentiment', {}).get('average_score', 0.0)
-        
+        # Insert analysis record
         cursor.execute('''
-            INSERT INTO video_analysis 
-            (video_id, video_title, channel_name, total_comments_analyzed, 
-             average_sentiment, analysis_data, source_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO analyses 
+            (video_id, video_title, channel_name, total_comments_analyzed, average_sentiment, analysis_data)
+            VALUES (?, ?, ?, ?, ?, ?)
         ''', (
-            video_id,
-            video_title,
-            channel_name,
-            total_items,
-            avg_sentiment,
-            json.dumps(analysis_result),
-            'comments'
+            video_data.get('id'),
+            video_data.get('title'),
+            video_data.get('channel'),
+            len(comments),
+            analysis_result.get('overall_sentiment', {}).get('average_score', 0),
+            json.dumps(analysis_result)
         ))
         
-        db_analysis_id = cursor.lastrowid
+        analysis_id = cursor.lastrowid
         
-        if comments:
-            for comment in comments:
-                comment_sentiment = 0.0
-                try:
-                    comment_sentiment = float(comment.get('sentiment_score', 0.0))
-                except (ValueError, TypeError):
-                    logger.warning(f"Invalid sentiment score for comment {comment.get('id')}")
-                
-                cursor.execute('''
-                    INSERT OR IGNORE INTO comments 
-                    (db_video_analysis_id, video_id, comment_id, author, text, 
-                     published_at, like_count, reply_count, sentiment_score)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    db_analysis_id,
-                    video_id,
-                    comment.get('id'),
-                    comment.get('author'),
-                    comment.get('text'),
-                    comment.get('published_at'),
-                    comment.get('like_count', 0),
-                    comment.get('reply_count', 0),
-                    comment_sentiment
-                ))
+        # Insert comments
+        for comment in comments:
+            cursor.execute('''
+                INSERT INTO comments 
+                (analysis_id, comment_text, author, published_at, like_count, reply_count, sentiment_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                analysis_id,
+                comment.get('text'),
+                comment.get('author'),
+                comment.get('published_at'),
+                comment.get('like_count', 0),
+                comment.get('reply_count', 0),
+                comment.get('sentiment_score')
+            ))
         
         conn.commit()
         conn.close()
-        logger.info(f"Analysis for video {video_id} stored with ID {db_analysis_id}")
-        return True
+        logger.info(f"Analysis stored successfully with ID: {analysis_id}")
+        
+        return analysis_id
         
     except Exception as e:
         logger.error(f"Error storing analysis: {e}")
-        return False
+        raise
 
 def get_analysis_history(limit=10):
-    """Retrieve recent analysis history"""
+    """Retrieve analysis history"""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT video_id, video_title, channel_name, analysis_date, 
-                   total_comments_analyzed, average_sentiment, source_type, analysis_data
-            FROM video_analysis
+            SELECT 
+                id,
+                video_id,
+                video_title,
+                channel_name,
+                analysis_date,
+                total_comments_analyzed,
+                average_sentiment
+            FROM analyses
             ORDER BY analysis_date DESC
             LIMIT ?
         ''', (limit,))
         
-        results = cursor.fetchall()
+        rows = cursor.fetchall()
         conn.close()
         
-        return [dict(row) for row in results]
+        history = []
+        for row in rows:
+            history.append({
+                'id': row['id'],
+                'video_id': row['video_id'],
+                'video_title': row['video_title'],
+                'channel_name': row['channel_name'],
+                'analysis_date': row['analysis_date'],
+                'total_comments_analyzed': row['total_comments_analyzed'],
+                'average_sentiment': row['average_sentiment']
+            })
+        
+        return history
         
     except Exception as e:
-        logger.error(f"Error retrieving history: {e}")
-        return []
+        logger.error(f"Error fetching history: {e}")
+        raise
+
+def get_analysis_by_id(analysis_id):
+    """Retrieve specific analysis by ID"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT * FROM analyses WHERE id = ?
+        ''', (analysis_id,))
+        
+        row = cursor.fetchone()
+        
+        if not row:
+            conn.close()
+            return None
+        
+        # Get associated comments
+        cursor.execute('''
+            SELECT * FROM comments WHERE analysis_id = ?
+        ''', (analysis_id,))
+        
+        comments = cursor.fetchall()
+        conn.close()
+        
+        analysis = {
+            'id': row['id'],
+            'video_id': row['video_id'],
+            'video_title': row['video_title'],
+            'channel_name': row['channel_name'],
+            'analysis_date': row['analysis_date'],
+            'total_comments_analyzed': row['total_comments_analyzed'],
+            'average_sentiment': row['average_sentiment'],
+            'analysis_data': json.loads(row['analysis_data']),
+            'comments': [dict(comment) for comment in comments]
+        }
+        
+        return analysis
+        
+    except Exception as e:
+        logger.error(f"Error fetching analysis: {e}")
+        raise
